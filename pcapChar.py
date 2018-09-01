@@ -33,9 +33,7 @@ class CmdLineIfc(object):
         new = ParsePcap( self._args.prnpcap, self._args.keep, self._args.verbose )
         
 #tshark -r Session0021.pcap -2R wlan_radio.channel==1 -q -z endpoints,wlan
-#parse channels to pcap
 #get statistics from pcap
-#distinct beacons
 #which device to which AP
 #all devices
 
@@ -50,16 +48,17 @@ class ChannelInfo(object):
         self.newfn = ''.join(filename.split('.')[:-1])+'chan_'+str(channel)+'.pcap'
         self.APs =[]
         self.devicesTotal = []
-        self.utilization = 0
-        self.devicesAP = []
-        self.unilist = []
+        self.ave_utilization = 0
+        self.min_utilization = 0
+        self.max_utilization = 0
+        self.devicesAssociated= {}
         
     def __str__(self):
-        return '{0} {1}'.format(str(self.chan), str(self.newfn)) 
+        return 'Channel: {0} {1} {2:.3f}\t{3:.3f}\t{4}'.format(str(self.chan), str(self.newfn),self.min_utilization, self.max_utilization, len(self.APs)) 
 
     def remTmpFile(self):
         print 'removing', self.tmpfn
-        os.remove(self.tmpfn)
+        os.remove(self.newfn)
 
     def parseChannel(self):
         if os.path.isfile(self.newfn):
@@ -72,7 +71,38 @@ class ChannelInfo(object):
                                         stdout=subprocess.PIPE, 
                                         executable="C:\\Program Files\\Wireshark\\tshark.exe")
             return tsharkProc
-        
+    
+    def getAPs(self):
+        fname = 'APsOnChan'+str(self.chan)
+        tsharkOut  = open(fname, "a+")
+        tsharkCall = ["tshark", "-r", self.newfn ,'-2R','wlan.fc.type_subtype == 0x0008', '-T', 'fields',  '-e', '_ws.col.Source', '-e', 'wlan.ssid', ]
+        if self.v:
+            print tsharkCall
+        tsharkProc = subprocess.Popen(tsharkCall,
+                                    stdout=tsharkOut, 
+                                    executable="C:\\Program Files\\Wireshark\\tshark.exe")
+        tsharkProc.wait()
+        with open(fname) as f:
+            allAPbeacons = []
+            for line in f:
+                try:
+                    line.split()[1]
+                except IndexError:
+                    allAPbeacons.append((line.split()[0],''))
+                else:
+                    allAPbeacons.append((line.split()[0],line.split()[1]))
+        self.APs = set(allAPbeacons)
+        tsharkOut.close()
+        #os.remove(fname)
+        return self.APs
+
+    def getAllDevices(self):
+        pass
+     
+    def getNetAssociation(self):
+        pass
+     
+    
     def getUtilization(self):
         fname = 'util_chan'+str(self.chan)
         tsharkOut  = open(fname, "a+")
@@ -89,10 +119,12 @@ class ChannelInfo(object):
                 if not line.isspace():
                     utils.append(line.strip())
             if utils:
-                self.utilization =  float(sum(map(int,utils)))/float((255*len(utils)))
+                self.min_utilization = float(min(map(int,utils)))/255.0
+                self.max_utilization = float(max(map(int,utils)))/255.0
+                self.ave_utilization =  float(sum(map(int,utils)))/float((255*len(utils)))
         tsharkOut.close()
         os.remove(fname)
-        return self.utilization
+        return self.ave_utilization
         
     def getResponses(self):
         if os.path.isfile(self.tmpfn):
@@ -136,8 +168,12 @@ class ParsePcap():
                         print i
                 self.subprocessQMngr()
                 for i in self.channels:
-                    print i.getUtilization()
+                    APs = i.getAPs()
+                    for a in APs:
+                        print a
+                    print i
                     break
+                    
                 
         #if not keep:
         #    self.cleanup()
