@@ -27,15 +27,13 @@ class CmdLineIfc(object):
         
         self.parser = argparse.ArgumentParser(description=description,epilog=epilog,prefix_chars="-/")
         self.parser.add_argument("-f","-F","/f","/F","--prnpcap",dest="prnpcap",required=True, help="System Path to pcap file captured")
-        self.parser.add_argument("-k","-K","/k","/K","--keepfiles",dest="keep",action="store_true",help="no clean up of files")
+        self.parser.add_argument("-k","-K","/k","/K","--keepfiles",dest="keep",default=True,action="store_true",help="no clean up of files")
         self.parser.add_argument("-v","-V","/v","/V","--verbose",dest="verbose",action="store_true",help="print out lines that are begin searched")
         self._args = self.parser.parse_args()
         new = ParsePcap( self._args.prnpcap, self._args.keep, self._args.verbose )
         
-#tshark -r Session0021.pcap -2R wlan_radio.channel==1 -q -z endpoints,wlan
 #get statistics from pcap
 #which device to which AP
-#all devices
 
     
 
@@ -47,14 +45,14 @@ class ChannelInfo(object):
         self.v = verbose
         self.newfn = ''.join(filename.split('.')[:-1])+'chan_'+str(channel)+'.pcap'
         self.APs =[]
-        self.devicesTotal = []
+        self.allDevices = []
         self.ave_utilization = 0
         self.min_utilization = 0
         self.max_utilization = 0
         self.devicesAssociated= {}
         
     def __str__(self):
-        return 'Channel: {0} {1} {2:.3f}\t{3:.3f}\t{4}'.format(str(self.chan), str(self.newfn),self.min_utilization, self.max_utilization, len(self.APs)) 
+        return 'Channel: {0} {1} min:{2:.3f}\tmax:{3:.3f}\tave:\t{4}\tnumAPs{5}'.format(str(self.chan), str(self.newfn),self.min_utilization, self.max_utilization,self.ave_utilization, len(self.APs)) 
 
     def remTmpFile(self):
         print 'removing', self.tmpfn
@@ -73,7 +71,7 @@ class ChannelInfo(object):
             return tsharkProc
     
     def getAPs(self):
-        fname = 'APsOnChan'+str(self.chan)
+        fname = 'APsOnChan_'+str(self.chan)
         tsharkOut  = open(fname, "a+")
         tsharkCall = ["tshark", "-r", self.newfn ,'-2R','wlan.fc.type_subtype == 0x0008', '-T', 'fields',  '-e', '_ws.col.Source', '-e', 'wlan.ssid', ]
         if self.v:
@@ -93,15 +91,67 @@ class ChannelInfo(object):
                     allAPbeacons.append((line.split()[0],line.split()[1]))
         self.APs = set(allAPbeacons)
         tsharkOut.close()
-        #os.remove(fname)
+        os.remove(fname)
         return self.APs
 
     def getAllDevices(self):
-        pass
+        fname = 'AllDevicesOnChan_'+str(self.chan)
+        tsharkOut  = open(fname, "a+")
+        #tsharkCall = ["tshark", "-r", self.newfn , '-q', '-z', 'endpoints,wlan' ]
+        tsharkCall = ["tshark", "-r", self.newfn , '-T', 'fields', '-e', '_ws.col.Source', '-e', '_ws.col.Destination']
+        if self.v:
+            print tsharkCall
+        tsharkProc = subprocess.Popen(tsharkCall,
+                                    stdout=tsharkOut, 
+                                    executable="C:\\Program Files\\Wireshark\\tshark.exe")
+        tsharkProc.wait()
+        with open(fname) as f:
+            all = []
+            for line in f:
+                for dev in line.split():
+                    if 'cast' not in dev and re.search('([0-9A-F]{2}[:-]){2}', dev, flags=re.I) and '(' not in dev:
+                        all.append(dev)
+            self.allDevices = list(set(all))
+        tsharkOut.close()
+        os.remove(fname)
+        return self.allDevices
      
     def getNetAssociation(self):
-        pass
-     
+        if not self.APs:
+            self.getAPs()
+        self.devicesAssociated = {ap[0]:[] for ap in self.APs}
+        if not self.allDevices:
+            self.getAllDevices()        
+        fname = 'NetAssoOnChan_'+str(self.chan)
+        tsharkOut  = open(fname, "a+")
+        tsharkCall = ["tshark", "-r", self.newfn , '-T', 'fields', '-e', '_ws.col.Source', '-e', '_ws.col.Destination']
+        if self.v:
+            print tsharkCall
+        tsharkProc = subprocess.Popen(tsharkCall,
+                                    stdout=tsharkOut, 
+                                    executable="C:\\Program Files\\Wireshark\\tshark.exe")
+        tsharkProc.wait()
+        with open(fname) as f:
+            allAPs = [ap[0] for ap in self.APs]
+            for line in f:
+                if not('cast' in line):
+                    index = 0
+                    for dev in line.split():
+                        if dev in allAPs:
+                            if index == 0 and len(line.split()) < 3:
+                                self.devicesAssociated[line.split()[0]].append(line.split()[1])
+                            elif index == 0 and len(line.split()) > 3:
+                                self.devicesAssociated[line.split()[0]].append(line.split()[3])
+                            elif index > 0:
+                                self.devicesAssociated[dev].append(line.split()[0])
+                        index += 1
+                else:
+                    pass
+            for devs in self.devicesAssociated:
+                self.devicesAssociated[devs] = list(set(self.devicesAssociated[devs]))
+        tsharkOut.close()
+        os.remove(fname)
+        return self.devicesAssociated
     
     def getUtilization(self):
         fname = 'util_chan'+str(self.chan)
@@ -167,10 +217,14 @@ class ParsePcap():
                     for i in self.channels:
                         print i
                 self.subprocessQMngr()
-                for i in self.channels:
-                    APs = i.getAPs()
-                    for a in APs:
-                        print a
+                for i in self.channels:                
+                    asso = i.getNetAssociation()                    
+                    for item in asso:
+                        for ssid in i.APs:
+                            if item in ssid[0]:
+                                print '{:26}{:33}\t{}\t{}'.format( item,ssid[1], len(asso[item]), asso[item])
+                    print 'number of device: {}'.format(len(i.allDevices))
+                    i.getUtilization()
                     print i
                     break
                     
